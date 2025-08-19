@@ -1,18 +1,24 @@
 import os
-import time
+import json
 import asyncio
-from fastapi import FastAPI, Response
 from telethon import TelegramClient
-from threading import Thread
-import xml.etree.ElementTree as ET
+from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+from fastapi import FastAPI
 from mega import Mega
+import tempfile
+import time
 
-# Telegram API
-import os
-
+# --- Telegram API ---
 api_id = int(os.environ.get("TG_API_ID"))
 api_hash = os.environ.get("TG_API_HASH")
 
+# --- Mega.nz ---
+MEGA_EMAIL = os.environ.get("MEGA_EMAIL")
+MEGA_PASSWORD = os.environ.get("MEGA_PASSWORD")
+mega = Mega()
+mega.login(MEGA_EMAIL, MEGA_PASSWORD)
+
+# --- Канали ---
 channels = [
     "https://t.me/lviv_nez",
     "https://t.me/lvivtruexa",
@@ -31,126 +37,122 @@ channels = [
 
 STATE_FILE = "last_ids.json"
 
-# Mega.nz через змінні середовища
-MEGA_EMAIL = os.environ.get("MEGA_EMAIL")
-MEGA_PASSWORD = os.environ.get("MEGA_PASSWORD")
-mega = Mega()
-mega.login(MEGA_EMAIL, MEGA_PASSWORD)
+# --- FastAPI ---
+app = FastAPI()
 
-# Час життя файлу на Mega (секунди)
-MEDIA_LIFETIME = 60 * 60  # 1 година
+# --- Файли Mega з часом завантаження ---
+mega_files = {}  # {link: upload_time}
 
+# --- Функції роботи з last_ids.json ---
 def load_state():
-    try:
-        import json
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print(f"{STATE_FILE} пошкоджений або порожній. Створюємо новий словник.")
+            return {}
+    return {}
 
 def save_state(state):
-    import json
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-def delete_file_after_delay(file):
-    time.sleep(MEDIA_LIFETIME)
+# --- Завантаження на Mega.nz ---
+def upload_to_mega(media_bytes, filename):
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(media_bytes)
+        tmp_path = tmp.name
     try:
-        mega.delete(file)
-        print(f"Файл {file} видалено після {MEDIA_LIFETIME} секунд.")
+        file = mega.upload(tmp_path, filename)
+        link = mega.get_upload_link(file)
+        mega_files[link] = time.time()  # зберігаємо час завантаження
     except Exception as e:
-        print(f"Помилка при видаленні файлу з Mega.nz: {e}")
+        print(f"Помилка завантаження на Mega: {e}")
+        link = None
+    finally:
+        os.remove(tmp_path)
+    return link
 
-async def check_channels():
+# --- Фоновий таск видалення файлів старше 1 години ---
+async def mega_cleanup_task():
+    while True:
+        now = time.time()
+        to_delete = [link for link, t in mega_files.items() if now - t > 3600]
+        for link in to_delete:
+            try:
+                mega.delete(link)  # видаляємо файл з Mega
+            except Exception as e:
+                print(f"Помилка видалення Mega файлу {link}: {e}")
+            del mega_files[link]
+        await asyncio.sleep(600)  # перевірка кожні 10 хвилин
+
+# --- Основна логіка ---
+async def fetch_messages(client):
     state = load_state()
-    async with TelegramClient("anon", api_id, api_hash) as client:
-        while True:
-            for channel in channels:
-                try:
-                    async for message in client.iter_messages(channel, limit=5):
-                        last_entry = state.get(channel, {"id": 0, "text": "", "media": []})
-                        if isinstance(last_entry, int):
-                            last_entry = {"id": last_entry, "text": "", "media": []}
+    feed_items = []
 
-                        if message.id <= last_entry["id"]:
-                            continue
+    for channel in channels:
+        try:
+            async for message in client.iter_messages(channel, limit=5):
+                last_id = state.get(channel, 0)
+                if message.id <= last_id:
+                    continue
 
-                        entry = {"id": message.id, "text": message.text or "", "media": []}
+                if not message.text and not message.media:
+                    continue
 
-                        # Обробка всіх медіа
-                        if message.media:
-                            try:
-                                # Локальний файл для завантаження
-                                local_filename = f"{channel.split('/')[-1]}_{message.id}"
-                                local_path = await client.download_media(message.media, file=local_filename)
+                entry = {
+                    "id": message.id,
+                    "channel": channel,
+                    "text": message.text or "",
+                    "media": []
+                }
 
-                                if local_path:
-                                    # Визначаємо тип медіа
-                                    ext = os.path.splitext(local_path)[1].lower()
-                                    if ext in [".mp4", ".mov", ".webm"]:
-                                        media_type = "video/mp4"
-                                    elif ext in [".jpg", ".jpeg", ".png", ".gif"]:
-                                        media_type = "image/jpeg"
-                                    else:
-                                        media_type = "application/octet-stream"
+                if hasattr(message.media, "webpage") and message.media.webpage:
+                    entry["media"].append({"type": "video", "url": message.media.webpage.url})
 
-                                    # Завантаження на Mega.nz
-                                    file = mega.upload(local_path)
-                                    mega_url = mega.get_upload_link(file)
-                                    entry["media"].append({"type": media_type, "url": mega_url})
+                if isinstance(message.media, MessageMediaPhoto) or isinstance(message.media, MessageMediaDocument):
+                    try:
+                        media_bytes = await message.download_media(bytes)
+                        filename = f"{channel}_{message.id}"
+                        link = upload_to_mega(media_bytes, filename)
+                        if link:
+                            media_type = "video" if getattr(message, "video", False) else "image"
+                            entry["media"].append({"type": media_type, "url": link})
+                    except Exception as e:
+                        print(f"Помилка обробки медіа: {e}")
 
-                                    Thread(target=delete_file_after_delay, args=(file,)).start()
-                                    os.remove(local_path)
-                            except Exception as e:
-                                print(f"Помилка при обробці медіа: {e}")
+                if entry["text"] or entry["media"]:
+                    feed_items.append(entry)
 
-                        # Пропускаємо пости без тексту та медіа
-                        if not entry["text"] or not entry["media"]:
-                            continue
+                state[channel] = message.id
 
-                        state[channel] = entry
-                        print(f"[{channel}] {message.id}: {entry['text'][:100]}")
+        except Exception as e:
+            print(f"Помилка при перевірці {channel}: {e}")
 
-                except Exception as e:
-                    print(f"Помилка при перевірці {channel}: {e}")
+    save_state(state)
+    return feed_items
 
-            save_state(state)
-            await asyncio.sleep(60)
-
-app = FastAPI()
-
-@app.get("/")
-def read_root():
-    return {"status": "ok"}
+# --- FastAPI endpoint ---
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(mega_cleanup_task())  # запускаємо таск видалення файлів
 
 @app.get("/rss")
-def get_rss():
-    state = load_state()
-    rss = ET.Element("rss", version="2.0")
-    channel_el = ET.SubElement(rss, "channel")
-    ET.SubElement(channel_el, "title").text = "Telegram RSS"
-    ET.SubElement(channel_el, "link").text = "https://your-render-domain.onrender.com/rss"
-    ET.SubElement(channel_el, "description").text = "Останні повідомлення з Telegram"
+async def get_rss():
+    async with TelegramClient("anon", api_id, api_hash) as client:
+        items = await fetch_messages(client)
+        rss = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0">\n<channel>\n'
+        rss += '<title>Telegram RSS</title>\n<link>https://your-render-domain.onrender.com/rss</link>\n'
+        rss += '<description>Останні повідомлення з Telegram</description>\n'
 
-    for channel_name, data in state.items():
-        if isinstance(data, int):
-            continue
-        text = data.get("text", "")
-        media = data.get("media", [])
-        if not text or not media:
-            continue
-        item = ET.SubElement(channel_el, "item")
-        ET.SubElement(item, "title").text = f"{channel_name} - {data['id']}"
-        ET.SubElement(item, "description").text = text
-        ET.SubElement(item, "link").text = f"{channel_name}/{data['id']}"
-        for m in media:
-            ET.SubElement(item, "enclosure", url=m["url"], type=m["type"])
+        for entry in items:
+            rss += f'<item>\n<title>{entry["channel"]} #{entry["id"]}</title>\n'
+            rss += f'<description>{entry["text"]}</description>\n'
+            for media in entry["media"]:
+                rss += f'<enclosure url="{media["url"]}" type="video/mp4" />\n'
+            rss += '</item>\n'
 
-    xml_str = ET.tostring(rss, encoding="utf-8")
-    return Response(content=xml_str, media_type="application/rss+xml")
-
-@app.on_event("startup")
-def start_telegram_bot():
-    def run_loop():
-        asyncio.run(check_channels())
-    Thread(target=run_loop, daemon=True).start()
+        rss += '</channel>\n</rss>'
+        return rss
