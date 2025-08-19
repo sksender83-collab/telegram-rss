@@ -1,13 +1,17 @@
-from fastapi import FastAPI
-from fastapi.responses import Response
-import json
+import os
+import time
 import asyncio
+from fastapi import FastAPI, Response
 from telethon import TelegramClient
 from threading import Thread
 import xml.etree.ElementTree as ET
+from mega import Mega
 
-api_id = 29651081
-api_hash = "1c5ecefb244fdfdd196b2a7f8ae982ca"
+# Telegram API
+import os
+
+api_id = int(os.environ.get("TG_API_ID"))
+api_hash = os.environ.get("TG_API_HASH")
 
 channels = [
     "https://t.me/lviv_nez",
@@ -27,16 +31,35 @@ channels = [
 
 STATE_FILE = "last_ids.json"
 
+# Mega.nz через змінні середовища
+MEGA_EMAIL = os.environ.get("MEGA_EMAIL")
+MEGA_PASSWORD = os.environ.get("MEGA_PASSWORD")
+mega = Mega()
+mega.login(MEGA_EMAIL, MEGA_PASSWORD)
+
+# Час життя файлу на Mega (секунди)
+MEDIA_LIFETIME = 60 * 60  # 1 година
+
 def load_state():
     try:
+        import json
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
 def save_state(state):
+    import json
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+
+def delete_file_after_delay(file):
+    time.sleep(MEDIA_LIFETIME)
+    try:
+        mega.delete(file)
+        print(f"Файл {file} видалено після {MEDIA_LIFETIME} секунд.")
+    except Exception as e:
+        print(f"Помилка при видаленні файлу з Mega.nz: {e}")
 
 async def check_channels():
     state = load_state()
@@ -54,14 +77,34 @@ async def check_channels():
 
                         entry = {"id": message.id, "text": message.text or "", "media": []}
 
-                        # Використовуємо тільки webpage.url для медіа
-                        if hasattr(message.media, "webpage") and message.media.webpage:
-                            file_url = message.media.webpage.url
-                            if file_url:
-                                m_type = "video/mp4" if "video" in file_url else "image/jpeg"
-                                entry["media"].append({"type": m_type, "url": file_url})
+                        # Обробка всіх медіа
+                        if message.media:
+                            try:
+                                # Локальний файл для завантаження
+                                local_filename = f"{channel.split('/')[-1]}_{message.id}"
+                                local_path = await client.download_media(message.media, file=local_filename)
 
-                        # Пропускаємо повідомлення без тексту або без медіа
+                                if local_path:
+                                    # Визначаємо тип медіа
+                                    ext = os.path.splitext(local_path)[1].lower()
+                                    if ext in [".mp4", ".mov", ".webm"]:
+                                        media_type = "video/mp4"
+                                    elif ext in [".jpg", ".jpeg", ".png", ".gif"]:
+                                        media_type = "image/jpeg"
+                                    else:
+                                        media_type = "application/octet-stream"
+
+                                    # Завантаження на Mega.nz
+                                    file = mega.upload(local_path)
+                                    mega_url = mega.get_upload_link(file)
+                                    entry["media"].append({"type": media_type, "url": mega_url})
+
+                                    Thread(target=delete_file_after_delay, args=(file,)).start()
+                                    os.remove(local_path)
+                            except Exception as e:
+                                print(f"Помилка при обробці медіа: {e}")
+
+                        # Пропускаємо пости без тексту та медіа
                         if not entry["text"] or not entry["media"]:
                             continue
 
@@ -92,18 +135,14 @@ def get_rss():
     for channel_name, data in state.items():
         if isinstance(data, int):
             continue
-
         text = data.get("text", "")
         media = data.get("media", [])
-
         if not text or not media:
             continue
-
         item = ET.SubElement(channel_el, "item")
         ET.SubElement(item, "title").text = f"{channel_name} - {data['id']}"
         ET.SubElement(item, "description").text = text
         ET.SubElement(item, "link").text = f"{channel_name}/{data['id']}"
-
         for m in media:
             ET.SubElement(item, "enclosure", url=m["url"], type=m["type"])
 
