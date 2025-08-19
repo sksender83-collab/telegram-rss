@@ -45,7 +45,6 @@ async def check_channels():
             for channel in channels:
                 try:
                     async for message in client.iter_messages(channel, limit=5):
-                        # Захист від чисел/порожніх значень
                         last_entry = state.get(channel, {"id": 0, "text": "", "media": []})
                         if isinstance(last_entry, int):
                             last_entry = {"id": last_entry, "text": "", "media": []}
@@ -89,14 +88,13 @@ def get_rss():
     ET.SubElement(channel_el, "description").text = "Останні повідомлення з Telegram"
 
     for channel_name, data in state.items():
-        # Захист від старих чисел у state
         if isinstance(data, int):
             continue
 
         text = data.get("text", "")
         media = data.get("media", [])
 
-        # Фільтр: тільки повідомлення з текстом і медіа
+        # Тільки повідомлення з текстом + медіа
         if not text or not media:
             continue
 
