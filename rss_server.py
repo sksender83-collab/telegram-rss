@@ -19,9 +19,6 @@ channels = [
     "https://t.me/lviv_realno",
     "https://t.me/lvov_lviv_novini",
     "https://t.me/times_lviv",
-    "https://t.me/vistilviv",
-    "https://t.me/lviv_golovne",
-    "https://t.me/lviv_24x7"
 ]
 
 # Файл для збереження останніх ID
@@ -58,3 +55,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
