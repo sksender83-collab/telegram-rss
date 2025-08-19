@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.responses import Response
 import json
@@ -5,6 +6,7 @@ import asyncio
 from telethon import TelegramClient
 from threading import Thread
 import xml.etree.ElementTree as ET
+
 
 # --- Telegram API ---
 api_id = int(os.environ.get("TG_API_ID"))
@@ -116,3 +118,4 @@ def start_telegram_bot():
     def run_loop():
         asyncio.run(check_channels())
     Thread(target=run_loop, daemon=True).start()
+
