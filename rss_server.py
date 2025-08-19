@@ -1,9 +1,12 @@
-from telethon import TelegramClient
+from fastapi import FastAPI
+from fastapi.responses import Response
 import json
 import os
 import asyncio
-from fastapi import FastAPI
+from telethon import TelegramClient
+from telethon.tl.types import MessageMediaDocument
 from threading import Thread
+import xml.etree.ElementTree as ET
 
 api_id = 29651081
 api_hash = "1c5ecefb244fdfdd196b2a7f8ae982ca"
@@ -43,25 +46,65 @@ async def check_channels():
             for channel in channels:
                 try:
                     async for message in client.iter_messages(channel, limit=5):
-                        last_id = state.get(channel, 0)
-                        if message.id <= last_id:
+                        last_entry = state.get(channel, {})
+                        if message.id <= last_entry.get("id", 0):
                             continue
-                        message_text = message.text if message.text else "[Медіа без тексту]"
-                        print(f"[{channel}] {message.id}: {message_text[:100]}")
-                        state[channel] = message.id
+
+                        entry = {"id": message.id, "text": message.text or "", "media": []}
+
+                        if message.media:
+                            # Отримуємо URL на медіа (фото або відео)
+                            file_url = await client.export_media(message.media)
+                            if file_url:
+                                if hasattr(message.media, "document"):
+                                    mime_type = getattr(message.media.document, "mime_type", "")
+                                    if "video" in mime_type:
+                                        entry["media"].append({"type": "video", "url": file_url})
+                                    elif "image" in mime_type:
+                                        entry["media"].append({"type": "photo", "url": file_url})
+
+                        state[channel] = entry
+                        print(f"[{channel}] {message.id}: {entry['text'][:100] if entry['text'] else '[Медіа]'}")
                 except Exception as e:
                     print(f"Помилка при перевірці {channel}: {e}")
+
             save_state(state)
             await asyncio.sleep(60)
 
-# FastAPI веб-сервер
 app = FastAPI()
 
 @app.get("/")
 def read_root():
     return {"status": "ok"}
 
-# Фоновий запуск Telegram-бота при старті FastAPI
+@app.get("/rss")
+def get_rss():
+    state = load_state()
+    rss = ET.Element("rss", version="2.0")
+    channel_el = ET.SubElement(rss, "channel")
+    ET.SubElement(channel_el, "title").text = "Telegram RSS"
+    ET.SubElement(channel_el, "link").text = "https://telegram-rss-n8i6.onrender.com/rss"
+    ET.SubElement(channel_el, "description").text = "Останні повідомлення з Telegram"
+
+    for channel_name, data in state.items():
+        text = data.get("text", "")
+        media = data.get("media", [])
+
+        # Фільтр: тільки повідомлення з текстом і медіа
+        if not text or not media:
+            continue
+
+        item = ET.SubElement(channel_el, "item")
+        ET.SubElement(item, "title").text = f"{channel_name} - {data['id']}"
+        ET.SubElement(item, "description").text = text
+        ET.SubElement(item, "link").text = f"{channel_name}/{data['id']}"
+
+        for m in media:
+            ET.SubElement(item, "enclosure", url=m["url"], type=m["type"])
+
+    xml_str = ET.tostring(rss, encoding="utf-8")
+    return Response(content=xml_str, media_type="application/rss+xml")
+
 @app.on_event("startup")
 def start_telegram_bot():
     def run_loop():
