@@ -2,12 +2,12 @@ from telethon import TelegramClient
 import json
 import os
 import asyncio
+from fastapi import FastAPI
+import threading
 
-# Дані Telegram App
 api_id = 29651081
 api_hash = "1c5ecefb244fdfdd196b2a7f8ae982ca"
 
-# Список каналів
 channels = [
     "https://t.me/lviv_nez",
     "https://t.me/lvivtruexa",
@@ -19,9 +19,11 @@ channels = [
     "https://t.me/lviv_realno",
     "https://t.me/lvov_lviv_novini",
     "https://t.me/times_lviv",
+    "https://t.me/vistilviv",
+    "https://t.me/lviv_golovne",
+    "https://t.me/lviv_24x7"
 ]
 
-# Файл для збереження останніх ID
 STATE_FILE = "last_ids.json"
 
 def load_state():
@@ -34,25 +36,34 @@ def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-async def main():
+async def check_channels():
     state = load_state()
-
     async with TelegramClient("anon", api_id, api_hash) as client:
-        for channel in channels:
-            print(f"\n=== Перевіряємо {channel} ===")
-            async for message in client.iter_messages(channel, limit=5):
-                last_id = state.get(channel, 0)
+        while True:
+            for channel in channels:
+                try:
+                    async for message in client.iter_messages(channel, limit=5):
+                        last_id = state.get(channel, 0)
+                        if message.id <= last_id:
+                            continue
+                        message_text = message.text if message.text else "[Медіа без тексту]"
+                        print(f"[{channel}] {message.id}: {message_text[:100]}")
+                        state[channel] = message.id
+                except Exception as e:
+                    print(f"Помилка при перевірці {channel}: {e}")
+            save_state(state)
+            await asyncio.sleep(60)  # чекати 1 хвилину перед наступною перевіркою
 
-                if message.id <= last_id:
-                    continue
+# FastAPI веб-сервер
+app = FastAPI()
 
-                message_text = message.text if message.text else "[Медіа без тексту]"
-                print(f"[NEW] {message.id}: {message_text[:100]}")
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
 
-                state[channel] = message.id
+# Функція для запуску Telegram-цикла в окремому потоці
+def start_telegram_loop():
+    asyncio.run(check_channels())
 
-    save_state(state)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
+# Запускаємо цикл в окремому потоці при старті FastAPI
+threading.Thread(target=start_telegram_loop, daemon=True).start()
