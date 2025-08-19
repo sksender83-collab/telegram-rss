@@ -1,12 +1,11 @@
 import os
-from fastapi import FastAPI
-from fastapi.responses import Response
 import json
 import asyncio
-from telethon import TelegramClient
 from threading import Thread
+from fastapi import FastAPI
+from fastapi.responses import Response
+from telethon import TelegramClient
 import xml.etree.ElementTree as ET
-
 
 # --- Telegram API ---
 api_id = int(os.environ.get("TG_API_ID"))
@@ -111,11 +110,10 @@ def get_rss():
             ET.SubElement(item, "enclosure", url=m["url"], type=m["type"])
 
     xml_str = ET.tostring(rss, encoding="utf-8")
-    return Response(content=xml_str, media_type="application/rss+xml")
+    return Response(content=xml_str, media_type="application/rss+xml; charset=utf-8")
 
 @app.on_event("startup")
 def start_telegram_bot():
     def run_loop():
         asyncio.run(check_channels())
     Thread(target=run_loop, daemon=True).start()
-
