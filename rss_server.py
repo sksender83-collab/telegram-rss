@@ -1,7 +1,6 @@
 from fastapi import FastAPI
 from fastapi.responses import Response
 import json
-import os
 import asyncio
 from telethon import TelegramClient
 from threading import Thread
@@ -29,10 +28,11 @@ channels = [
 STATE_FILE = "last_ids.json"
 
 def load_state():
-    if os.path.exists(STATE_FILE):
+    try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    return {}
+    except:
+        return {}
 
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -54,18 +54,20 @@ async def check_channels():
 
                         entry = {"id": message.id, "text": message.text or "", "media": []}
 
-                        if message.media:
-                            file_url = await client.export_media(message.media)
+                        # Використовуємо тільки webpage.url для медіа
+                        if hasattr(message.media, "webpage") and message.media.webpage:
+                            file_url = message.media.webpage.url
                             if file_url:
-                                if hasattr(message.media, "document"):
-                                    mime_type = getattr(message.media.document, "mime_type", "")
-                                    if "video" in mime_type:
-                                        entry["media"].append({"type": "video", "url": file_url})
-                                    elif "image" in mime_type:
-                                        entry["media"].append({"type": "photo", "url": file_url})
+                                m_type = "video/mp4" if "video" in file_url else "image/jpeg"
+                                entry["media"].append({"type": m_type, "url": file_url})
+
+                        # Пропускаємо повідомлення без тексту або без медіа
+                        if not entry["text"] or not entry["media"]:
+                            continue
 
                         state[channel] = entry
-                        print(f"[{channel}] {message.id}: {entry['text'][:100] if entry['text'] else '[Медіа]'}")
+                        print(f"[{channel}] {message.id}: {entry['text'][:100]}")
+
                 except Exception as e:
                     print(f"Помилка при перевірці {channel}: {e}")
 
@@ -84,7 +86,7 @@ def get_rss():
     rss = ET.Element("rss", version="2.0")
     channel_el = ET.SubElement(rss, "channel")
     ET.SubElement(channel_el, "title").text = "Telegram RSS"
-    ET.SubElement(channel_el, "link").text = "https://telegram-rss-n8i6.onrender.com/rss"
+    ET.SubElement(channel_el, "link").text = "https://your-render-domain.onrender.com/rss"
     ET.SubElement(channel_el, "description").text = "Останні повідомлення з Telegram"
 
     for channel_name, data in state.items():
@@ -94,7 +96,6 @@ def get_rss():
         text = data.get("text", "")
         media = data.get("media", [])
 
-        # Тільки повідомлення з текстом + медіа
         if not text or not media:
             continue
 
