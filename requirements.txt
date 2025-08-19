@@ -1,4 +1,5 @@
-fastapi
-uvicorn[standard]
+fastapi>=0.95.2
+uvicorn[standard]>=0.22.0
 telethon>=1.29.0
-mega.py
+mega.py>=0.4.5
+python-multipart>=0.0.6
