@@ -3,7 +3,7 @@ import json
 import os
 import asyncio
 from fastapi import FastAPI
-import threading
+from threading import Thread
 
 api_id = 29651081
 api_hash = "1c5ecefb244fdfdd196b2a7f8ae982ca"
@@ -52,7 +52,7 @@ async def check_channels():
                 except Exception as e:
                     print(f"Помилка при перевірці {channel}: {e}")
             save_state(state)
-            await asyncio.sleep(60)  # чекати 1 хвилину перед наступною перевіркою
+            await asyncio.sleep(60)
 
 # FastAPI веб-сервер
 app = FastAPI()
@@ -61,9 +61,9 @@ app = FastAPI()
 def read_root():
     return {"status": "ok"}
 
-# Функція для запуску Telegram-цикла в окремому потоці
-def start_telegram_loop():
-    asyncio.run(check_channels())
-
-# Запускаємо цикл в окремому потоці при старті FastAPI
-threading.Thread(target=start_telegram_loop, daemon=True).start()
+# Фоновий запуск Telegram-бота при старті FastAPI
+@app.on_event("startup")
+def start_telegram_bot():
+    def run_loop():
+        asyncio.run(check_channels())
+    Thread(target=run_loop, daemon=True).start()
