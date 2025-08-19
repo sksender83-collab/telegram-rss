@@ -4,7 +4,6 @@ import json
 import os
 import asyncio
 from telethon import TelegramClient
-from telethon.tl.types import MessageMediaDocument
 from threading import Thread
 import xml.etree.ElementTree as ET
 
@@ -46,14 +45,17 @@ async def check_channels():
             for channel in channels:
                 try:
                     async for message in client.iter_messages(channel, limit=5):
-                        last_entry = state.get(channel, {})
-                        if message.id <= last_entry.get("id", 0):
+                        # Захист від чисел/порожніх значень
+                        last_entry = state.get(channel, {"id": 0, "text": "", "media": []})
+                        if isinstance(last_entry, int):
+                            last_entry = {"id": last_entry, "text": "", "media": []}
+
+                        if message.id <= last_entry["id"]:
                             continue
 
                         entry = {"id": message.id, "text": message.text or "", "media": []}
 
                         if message.media:
-                            # Отримуємо URL на медіа (фото або відео)
                             file_url = await client.export_media(message.media)
                             if file_url:
                                 if hasattr(message.media, "document"):
@@ -87,6 +89,10 @@ def get_rss():
     ET.SubElement(channel_el, "description").text = "Останні повідомлення з Telegram"
 
     for channel_name, data in state.items():
+        # Захист від старих чисел у state
+        if isinstance(data, int):
+            continue
+
         text = data.get("text", "")
         media = data.get("media", [])
 
